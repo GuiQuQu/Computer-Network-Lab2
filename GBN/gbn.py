@@ -49,7 +49,7 @@ def make_ack(seq):
     """
     ack seq
     """
-    ack = str("ack " + str(seq))
+    ack = str(str(seq) + " ack")
     return ack.encode('utf-8')
 
 
@@ -77,16 +77,13 @@ class Gbn:
         # 数据分组缓存
         self.send_cache = [b'0'] * self.n
         self.lock = threading.Lock()
-        # path = self.name + ".txt"
-        # self.log = open(path, 'w')
+        self.send_flag = False
 
     def begin_send(self):
         while True:
-            self.lock.acquire()
             data = get_data(self.name)
-            self.lock.release()
             self.__send(data)  # 发送数据
-            self.__rcv_ack()
+            # self.__rcv_ack()
             time.sleep(2)
 
     def check_ack(self):
@@ -100,6 +97,7 @@ class Gbn:
                 if self.next_seq_num < self.base + self.n:  # 窗口内还有序号
                     pkt = make_pkt(data, self.next_seq_num)
                     self.socket.sendto(pkt, (self.remote_ip, self.remote_port))
+                    self.send_flag = True
                     print(self.name, 'Send,seq=', self.next_seq_num)
                     self.send_cache[
                         self.next_seq_num % self.n] = pkt  # 如果窗口大小是5，->0,1,2,3,4 当next_seq_num=5时，这个数据包的缓存放到0号位置
@@ -116,22 +114,26 @@ class Gbn:
     def __rcv_ack(self):
         # 接受ack  非阻塞方式
         readable, writeable, errors = select.select([self.socket, ], [], [], 1)
-        if len(readable) > 0:
-            byte, addr = self.socket.recvfrom(1024)
-            ack_message = byte.decode()
-            if 'ACK' in ack_message:
-                ack_message = ack_message.split()
-                ret_seq = int(ack_message[1])
-                print(self.name, ' receive ACK,seq=', ret_seq)
-                self.base = ret_seq + 1
-                if self.base == self.next_seq_num:
-                    self.timer = -1
-                else:
-                    self.timer = 0
-        else:
-            self.timer = self.timer + 1
-            if self.timer > MAX_TIMER:
-                self.timeout()
+        if self.send_flag:
+            if len(readable) > 0:
+                byte, addr = self.socket.recvfrom(1024)
+                ack_message = byte.decode()
+                if 'ack' in ack_message:
+                    ack_message = ack_message.split()
+                    ret_seq = int(ack_message[0])
+                    print(self.name, 'receive ACK,seq=', ret_seq, 'base=', self.base, 'next_seq_num=',
+                          self.next_seq_num)
+                    self.base = ret_seq + 1
+                    self.send_flag = False
+                    if self.base == self.next_seq_num:
+                        self.timer = -1
+                    else:
+                        self.timer = 0
+            else:
+                self.timer = self.timer + 1
+                if self.timer > MAX_TIMER:
+                    self.send_flag = False
+                    self.timeout()
 
     def timeout(self):
         print("Client Time Out,seq=", self.base)
@@ -140,13 +142,14 @@ class Gbn:
         while i < self.next_seq_num:
             pkt = self.send_cache[i % self.n]
             self.socket.sendto(pkt, (self.remote_ip, self.remote_port))
+            self.send_flag = True
             i = i + 1
 
     def begin_rcv(self):
         while True:
             self.rcv_data()
 
-    def rcv_data(self):  # GBN 接受端的方法
+    def rcv_data(self):  # GBN 接受端的方法 + 接受ack
         # 跳过数据检查 只检查序列号
         # 只有当缓冲区有资源时，才会读取
         readable, writeable, errors = select.select([self.socket, ], [], [], 1)
@@ -154,12 +157,25 @@ class Gbn:
             byte, addr = self.socket.recvfrom(1024)
             message = byte.decode().split()
             ret_seq = int(message[0])
-            print(self.name, ' receive data,seq=', ret_seq)
-            ack = make_ack(ret_seq)
-            if ret_seq == self.except_seq_num:
-                print(self.name, ' receive expect data')
-                self.except_seq_num = (self.except_seq_num + 1) % MAX_SEQ_NUM
-            self.socket.sendto(ack, (self.remote_ip, self.remote_port))
+            if 'ack' != message[1]:
+                # print(self.name, 'receive data,seq=', ret_seq)
+                ack = make_ack(ret_seq)
+                if ret_seq == self.except_seq_num:
+                    print(self.name, ' receive expected data,seq=', ret_seq, ',content=\"', message, '\"')
+                    self.except_seq_num = (self.except_seq_num + 1) % MAX_SEQ_NUM
+                self.socket.sendto(ack, (self.remote_ip, self.remote_port))
+            else:
+                print(self.name, 'receive ACK,seq=', ret_seq, 'base=', self.base, 'next_seq_num=',
+                      self.next_seq_num)
+                self.base = ret_seq + 1
+                self.send_flag = False
+                if self.base == self.next_seq_num:
+                    self.timer = -1  # 停止计时器
+                else:
+                    self.timer = 0  # 重启计时器
+        else:
+            if self.send_flag:  # 读不到资源并且已经发送了数据
+                self.timer = self.timer + 1
 
 
 class GbnServer:
