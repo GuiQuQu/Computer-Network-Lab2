@@ -1,3 +1,4 @@
+# SR协议
 # GBN协议
 import select
 import threading
@@ -10,7 +11,7 @@ CLIENT_HOST = '127.0.0.1'
 CLIENT_PORT = 12138
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 12139
-MAX_SEQ_NUM = 6
+MAX_SEQ_NUM = 11
 """
 要处理的问题
 1.解决发送线程和接受线程的相互阻塞问题
@@ -19,18 +20,7 @@ MAX_SEQ_NUM = 6
 
 
 def main():
-    client1 = Gbn('client1', '', 12138, '127.0.0.1', 12139)
-    client2 = Gbn('client2', '', 12139, '127.0.0.1', 12138)
-    c1_send = threading.Thread(target=client1.begin_send)
-    c1_rcv = threading.Thread(target=client1.begin_rcv)
-    c2_send = threading.Thread(target=client2.begin_send)
-    c2_rcv = threading.Thread(target=client2.begin_rcv)
-
-    c1_send.start()
-    c1_rcv.start()
-
-    c2_send.start()
-    c2_rcv.start()
+    pass
 
 
 def make_pkt(data, seq):
@@ -55,7 +45,7 @@ def get_data(name):
     return data
 
 
-class Gbn:
+class Sr:
     def __init__(self, name, client_ip, client_port, remote_ip, remote_port, n=5):
         # 基本信息
         self.name = name
@@ -64,16 +54,17 @@ class Gbn:
         self.next_seq_num = self.base
         self.n = n
         self.timer = 0
+        self.send_cache = [b'0'] * self.n  # 发送方缓存
+        self.send_log = [0] * self.n  # 发送方记录  0表示没有收到ack，1表示收到了ack
         # 接受方
-        self.except_seq_num = 0
+        self.rcv_base = 0
+        self.rcv_cache = [b'0'] * self.n  # 接受方缓存
+        self.rcv_log = [0] * self.n  # 接受方记录
         # 套接字
         self.socket = socket(AF_INET, SOCK_DGRAM)
         self.socket.bind((client_ip, client_port))
         self.remote_ip = remote_ip
         self.remote_port = remote_port
-        # 数据分组缓存
-        self.send_cache = [b'0'] * self.n
-        # self.send_flag = False
         self.ack = make_ack(0)
 
     def begin_send(self):
@@ -93,16 +84,15 @@ class Gbn:
                     self.next_seq_num = 0
                 else:
                     print('序号用尽,请等待')
-                    # self.timeout()
                     return
             if self.next_seq_num < self.base + self.n:  # 窗口内还有序号
                 pkt = make_pkt(data, self.next_seq_num)
                 self.socket.sendto(pkt, (self.remote_ip, self.remote_port))
-                self.send_flag = True
                 print(self.name, 'Send,pkt seq=', self.next_seq_num, 'base=', self.base, 'next_seq_num=',
                       self.next_seq_num, 'timer=', self.timer)
                 self.send_cache[
                     self.next_seq_num % self.n] = pkt  # 如果窗口大小是5，->0,1,2,3,4 当next_seq_num=5时，这个数据包的缓存放到0号位置
+                self.send_log[self.next_seq_num % self.n] = 0
                 if self.next_seq_num == self.base:  # 没有未确认的数据，重启定时器
                     self.timer = 0
                 self.next_seq_num = self.next_seq_num + 1
@@ -125,29 +115,50 @@ class Gbn:
             ret_seq = int(message[0])
             if len(message) <= 1 or 'ack' != message[1]:  # 分开接受ack和接受数据
                 if is_rcv < 0.3:  # 接受之后不处理数据
-                    print("refuse_pkt", ',content=', message)
+                    print("refuse pkt", ',content=', message)
                     return
-                # print(self.name, 'receive data,seq=', ret_seq)
-                if ret_seq == self.except_seq_num:
-                    self.ack = make_ack(self.except_seq_num)  # 构造返回的ack
-                    print(self.name, ' receive expected data,seq=', self.except_seq_num, ',content=\"', message, '\"')
-                    self.except_seq_num = (self.except_seq_num + 1) % MAX_SEQ_NUM
+                is_ret_ack = False
+                if self.rcv_base <= ret_seq < self.rcv_base + self.n:  # 在接受范围内，发送ack
+                    is_ret_ack = True
+                    self.rcv_cache[ret_seq % self.n] = message
+                    self.rcv_log[ret_seq % self.n] = 1
+                    print(self.name, ' receive data in window,seq=', ret_seq, 'rcv_base=', self.rcv_base, 'rcv_end=',
+                          self.rcv_base + self.n, ',content=\"',
+                          message, '\"')
+                    # 更新rcv_base
+                    # old_rcv_base = self.rcv_base
+                    for i in range(self.n):
+                        if self.rcv_log[self.rcv_base % self.n] == 1:
+                            # 上交数据
+                            print('deliver data,seq=', self.rcv_base, 'content=',
+                                  self.rcv_cache[self.rcv_base % self.n])
+                            self.rcv_log[self.rcv_base % self.n] = 0  #
+                            if self.rcv_base < MAX_SEQ_NUM:
+                                self.rcv_base = self.rcv_base + 1
+                                if self.rcv_base == MAX_SEQ_NUM:  # 只会收到0~MAX_SEQ_NUM序号的字段
+                                    self.rcv_base = 0
+                        else:
+                            break
+                elif self.rcv_base - self.n <= ret_seq < self.rcv_base:  # 已经接受但是发送端还没有收到ack
+                    is_ret_ack = True
+                    pass
                 else:
-                    print('NO expected data,content=', message)
-                is_ack = random.random()
-                if is_ack < 0.5:  # 有0.5的概率不发送ack报文
-                    self.socket.sendto(self.ack, (self.remote_ip, self.remote_port))
-                else:
-                    print('no_ack=', is_ack, 'ack_message=', self.ack)
-            else:
-                self.base = ret_seq + 1
-                # if self.next_seq_num - self.base > 0:
-                # self.send_flag = False  # 有未确认的数据就记超时
-                # 本来的想法是发送了数据之后在来判断超时
-                # timeout之后会发送多个send
-                # 但是一个标志只能处理收到了一个了ack报文
-                # 当 3 4 5 被重发之后，收到了3的ack之后，这个标志为False
-                # 如果4的pkt丢失或者ack丢失，就无法为4记超时
+                    print('OVER WINDOW DATA,rcv_base=', self.rcv_base, 'content=', message)
+                if is_ret_ack:
+                    is_ack = random.random()
+                    self.ack = make_ack(ret_seq)  # 构造返回的ack
+                    if is_ack < 0.5:  # 有0.5的概率不发送ack报文
+                        print('Send ACK,content=', self.ack)
+                        self.socket.sendto(self.ack, (self.remote_ip, self.remote_port))
+                    else:
+                        print('no_ack=', is_ack, 'ack_message=', self.ack)
+            else:  # 收到ack
+                self.send_log[ret_seq % self.n] = 1
+                for i in range(self.base, self.next_seq_num):
+                    if self.send_log[self.base % self.n] == 1:  # 前面有已经接受ack的分组
+                        self.base = self.base + 1  # self.base不会超过next_seq_num,next_seq_num前面不会有发送还未确认的分组
+                    else:
+                        break
                 print(self.name, 'receive ACK,seq=', ret_seq, 'base=', self.base, 'next_seq_num=',
                       self.next_seq_num)
                 if self.base == self.next_seq_num:
@@ -161,14 +172,11 @@ class Gbn:
                     self.timeout()
 
     def timeout(self):
+        # 重发第一个未确认分组
         print("Sender Time Out,seq=", self.base)
-        i = self.base
+        pkt = self.send_cache[self.base % self.n]
+        self.socket.sendto(pkt, (self.remote_ip, self.remote_port))
         self.timer = 0
-        while i < self.next_seq_num:
-            pkt = self.send_cache[i % self.n]
-            self.socket.sendto(pkt, (self.remote_ip, self.remote_port))
-            # self.send_flag = True
-            i = i + 1
 
     def begin_rcv(self):
         while True:
@@ -179,7 +187,6 @@ class Gbn:
             self.__rcv_data_with_loss()
 
     def rcv_data(self):  # GBN 接受端的方法 + 接受ack
-        # 跳过数据检查 只检查序列号
         # 只有当缓冲区有资源时，才会读取
         readable, writeable, errors = select.select([self.socket, ], [], [], 1)
         if len(readable) > 0:
@@ -187,15 +194,44 @@ class Gbn:
             message = byte.decode().split()
             ret_seq = int(message[0])
             if len(message) <= 1 or 'ack' != message[1]:  # 分开接受ack和接受数据
-                if ret_seq == self.except_seq_num:
-                    self.ack = make_ack(self.except_seq_num)  # 构造返回的ack
-                    print(self.name, ' receive expected data,seq=', self.except_seq_num, ',content=\"', message, '\"')
-                    self.except_seq_num = (self.except_seq_num + 1) % MAX_SEQ_NUM
+                is_ret_ack = False
+                if self.rcv_base <= ret_seq < self.rcv_base + self.n:  # 在接受范围内，发送ack
+                    is_ret_ack = True
+                    self.rcv_cache[ret_seq % self.n] = message
+                    self.rcv_log[ret_seq % self.n] = 1
+                    print(self.name, ' receive data in window,seq=', ret_seq, 'rcv_base=', self.rcv_base, 'rcv_end=',
+                          self.rcv_base + self.n, ',content=\"',
+                          message, '\"')
+                    # 更新rcv_base
+                    # old_rcv_base = self.rcv_base
+                    for i in range(self.n):
+                        if self.rcv_log[self.rcv_base % self.n] == 1:
+                            # 上交数据
+                            print('deliver data,seq=', self.rcv_base, 'content=',
+                                  self.rcv_cache[self.rcv_base % self.n])
+                            self.rcv_log[self.rcv_base % self.n] = 0  #
+                            if self.rcv_base < MAX_SEQ_NUM:
+                                self.rcv_base = self.rcv_base + 1
+                                if self.rcv_base == MAX_SEQ_NUM:  # 只会收到0~MAX_SEQ_NUM序号的字段
+                                    self.rcv_base = 0
+                        else:
+                            break
+                elif self.rcv_base - self.n <= ret_seq < self.rcv_base:  # 已经接受但是发送端还没有收到ack
+                    is_ret_ack = True
+                    pass
                 else:
-                    print('NO expected data,content=', message)
-                self.socket.sendto(self.ack, (self.remote_ip, self.remote_port))
-            else:
-                self.base = ret_seq + 1
+                    print('OVER WINDOW DATA,rcv_base=', self.rcv_base, 'content=', message)
+                if is_ret_ack:
+                    self.ack = make_ack(ret_seq)  # 构造返回的ack
+                    print('Send ACK,content=', self.ack)
+                    self.socket.sendto(self.ack, (self.remote_ip, self.remote_port))
+            else:  # 收到ack
+                self.send_log[ret_seq % self.n] = 1
+                for i in range(self.base, self.next_seq_num):
+                    if self.send_log[self.base % self.n] == 1:  # 前面有已经接受ack的分组
+                        self.base = self.base + 1  # self.base不会超过next_seq_num,next_seq_num前面不会有发送还未确认的分组
+                    else:
+                        break
                 print(self.name, 'receive ACK,seq=', ret_seq, 'base=', self.base, 'next_seq_num=',
                       self.next_seq_num)
                 if self.base == self.next_seq_num:
@@ -207,17 +243,6 @@ class Gbn:
                 self.timer = self.timer + 1
                 if self.timer > MAX_TIMER:
                     self.timeout()
-
-
-class GbnServer:
-    def __init__(self):
-        pass
-
-    def __send(self):
-        pass
-
-    def __receive(self):
-        pass
 
 
 if __name__ == '__main__':
