@@ -126,7 +126,6 @@ class Sr:
                           self.rcv_base + self.n, ',content=\"',
                           message, '\"')
                     # 更新rcv_base
-                    # old_rcv_base = self.rcv_base
                     for i in range(self.n):
                         if self.rcv_log[self.rcv_base % self.n] == 1:
                             # 上交数据

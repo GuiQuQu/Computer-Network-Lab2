@@ -141,13 +141,6 @@ class Gbn:
                     print('no_ack=', is_ack, 'ack_message=', self.ack)
             else:
                 self.base = ret_seq + 1
-                # if self.next_seq_num - self.base > 0:
-                # self.send_flag = False  # 有未确认的数据就记超时
-                # 本来的想法是发送了数据之后在来判断超时
-                # timeout之后会发送多个send
-                # 但是一个标志只能处理收到了一个了ack报文
-                # 当 3 4 5 被重发之后，收到了3的ack之后，这个标志为False
-                # 如果4的pkt丢失或者ack丢失，就无法为4记超时
                 print(self.name, 'receive ACK,seq=', ret_seq, 'base=', self.base, 'next_seq_num=',
                       self.next_seq_num)
                 if self.base == self.next_seq_num:
@@ -206,17 +199,6 @@ class Gbn:
                 self.timer = self.timer + 1
                 if self.timer > MAX_TIMER:
                     self.timeout()
-
-
-class GbnServer:
-    def __init__(self):
-        pass
-
-    def __send(self):
-        pass
-
-    def __receive(self):
-        pass
 
 
 if __name__ == '__main__':

@@ -2,7 +2,6 @@
 import os
 import random
 import select
-import struct
 import time
 from socket import *
 
@@ -90,7 +89,6 @@ class StopWait:
         path = input('请输入要发送的文件路径\n')
         filesize_bytes = os.path.getsize(path)
         self.__send('file')
-        # data = path + " " + str(filesize_bytes)  # 包含文件名和文件大小
         time.sleep(2)
         self.__send(path + " " + str(filesize_bytes))
         time.sleep(2)
