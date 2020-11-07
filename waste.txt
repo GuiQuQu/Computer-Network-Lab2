@@ -1,0 +1,29 @@
+gbn class:
+1.
+  def check_ack(self):
+        while True:
+            self.__rcv_ack()  # 检查ack
+2.
+ def __rcv_ack(self):
+        # 接受ack  非阻塞方式
+        readable, writeable, errors = select.select([self.socket, ], [], [], 1)
+        if self.send_flag:
+            if len(readable) > 0:
+                byte, addr = self.socket.recvfrom(1024)
+                ack_message = byte.decode()
+                if 'ack' in ack_message:
+                    ack_message = ack_message.split()
+                    ret_seq = int(ack_message[0])
+                    print(self.name, 'receive ACK,seq=', ret_seq, 'base=', self.base, 'next_seq_num=',
+                          self.next_seq_num)
+                    self.base = ret_seq + 1
+                    self.send_flag = False
+                    if self.base == self.next_seq_num:
+                        self.timer = -1
+                    else:
+                        self.timer = 0
+            else:
+                self.timer = self.timer + 1
+                if self.timer > MAX_TIMER:
+                    self.send_flag = False
+                    self.timeout()

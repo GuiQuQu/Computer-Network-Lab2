@@ -167,7 +167,6 @@ class Gbn:
         while i < self.next_seq_num:
             pkt = self.send_cache[i % self.n]
             self.socket.sendto(pkt, (self.remote_ip, self.remote_port))
-            # self.send_flag = True
             i = i + 1
 
     def begin_rcv(self):

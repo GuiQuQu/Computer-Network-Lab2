@@ -11,5 +11,15 @@ def main():
     _rcv.start()
 
 
+def dis_file():
+    sw_server = StopWait('server', '', 12311, '127.0.0.1', 12310)
+    path = '../waste.txt'
+    _send = threading.Thread(target=sw_server.begin_file_dis)
+    _rcv = threading.Thread(target=sw_server.begin_receive)
+    _send.start()
+    _rcv.start()
+
+
 if __name__ == '__main__':
-    main()
+    # main()
+    dis_file()
